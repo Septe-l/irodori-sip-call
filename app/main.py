@@ -118,6 +118,11 @@ def parse_at(at: str | None, in_minutes: float | None) -> dt.datetime:
     if re.fullmatch(r"\d{1,2}:\d{2}", at):  # 時刻だけなら次に来るその時刻
         t = dt.datetime.combine(now.date(), dt.time(*map(int, at.split(":"))))
         return t if t > now else t + dt.timedelta(days=1)
+    if mo := re.fullmatch(r"(\d{1,2})[-/](\d{1,2})[T ](\d{1,2}):(\d{2})(?::\d{2})?", at):
+        # 年なし（"11-23 07:30" "11/23 7:30"）は今年。過ぎていれば来年（12月に1月分を予約する場合）
+        mon, day, h, mi = map(int, mo.groups())
+        t = dt.datetime(now.year, mon, day, h, mi)
+        return t if t > now - dt.timedelta(minutes=1) else t.replace(year=now.year + 1)
     t = dt.datetime.fromisoformat(at.replace("Z", "+00:00"))
     if t.tzinfo:  # タイムゾーン付きはコンテナのローカル時刻に直す
         t = t.astimezone().replace(tzinfo=None)
@@ -131,9 +136,11 @@ def create_call(
     try:
         when = parse_at(at, in_minutes)
     except ValueError:
-        raise HTTPException(400, f"時刻を解釈できません: {at}（ISO 8601 か HH:MM）")
-    if when < dt.datetime.now() - dt.timedelta(minutes=1):
-        raise HTTPException(400, f"過去の時刻です: {when.isoformat(timespec='minutes')}")
+        raise HTTPException(400, f"時刻を解釈できません: {at}（\"MM-DD HH:MM\"、\"HH:MM\"、ISO 8601）")
+    now = dt.datetime.now()
+    if when < now - dt.timedelta(minutes=1):
+        raise HTTPException(
+            400, f"過去の時刻です: {when.isoformat(timespec='minutes')}（現在 {now.isoformat(timespec='minutes')}）")
     if message and prompt:
         raise HTTPException(400, "message と prompt はどちらか一方だけ指定してください")
     call = {
@@ -237,8 +244,11 @@ def schedule_call(
     The call hangs up automatically after the message has been played.
 
     Args:
-        at: When to call. ISO 8601 ("2026-11-23T07:30", timezone offsets allowed) or "HH:MM"
-            (next occurrence). Omit both `at` and `in_minutes` to call right away.
+        at: When to call, in the server's local time. Prefer formats WITHOUT a year:
+            "HH:MM" (next occurrence) or "MM-DD HH:MM" (this year; next year if already past).
+            Full ISO 8601 ("YYYY-MM-DDTHH:MM", timezone offsets allowed) also works, but only
+            include a year if you are sure of the current date. Omit both `at` and `in_minutes`
+            to call right away. The response includes the resolved time.
         in_minutes: Call this many minutes from now (alternative to `at`).
         message: Exact text to speak. If omitted, an LLM writes the message.
         prompt: Instruction for the LLM that writes the message (used only when `message` is omitted;
@@ -382,7 +392,7 @@ async def audio() -> FileResponse:
 
 
 class CallRequest(BaseModel):
-    at: str | None = Field(None, description='ISO 8601（"2026-11-23T07:30"、タイムゾーン付き可）か "HH:MM"。at も in_minutes も無ければ今すぐ')
+    at: str | None = Field(None, description='"HH:MM"（次に来るその時刻）、"MM-DD HH:MM"（今年。過ぎていれば来年）、ISO 8601。at も in_minutes も無ければ今すぐ')
     in_minutes: float | None = Field(None, description="何分後にかけるか（at の代わり）")
     message: str | None = Field(None, description="そのまま読み上げる文。省略するとLLMが書く")
     prompt: str | None = Field(None, description="LLMへの指示（message省略時のみ。省略で設定のプロンプト）")

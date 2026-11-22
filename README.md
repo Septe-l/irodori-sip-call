@@ -68,7 +68,7 @@ Streamable HTTP で `http://<ホスト>:45000/mcp` に接続します。
 
 | ツール | 内容 |
 | --- | --- |
-| `schedule_call` | 予約する。`at`（ISO 8601 か `HH:MM`）または `in_minutes`、読み上げ文 `message` か LLM への指示 `prompt`、`target`、`voice`（すべて省略可。省略すると今すぐ設定のプロンプトで発信） |
+| `schedule_call` | 予約する。`at`（`HH:MM`、`MM-DD HH:MM`（年なしは今年）、ISO 8601）または `in_minutes`、読み上げ文 `message` か LLM への指示 `prompt`、`target`、`voice`（すべて省略可。省略すると今すぐ設定のプロンプトで発信） |
 | `list_calls` | 予約の一覧 |
 | `cancel_call` | 予約の取り消し |
 
