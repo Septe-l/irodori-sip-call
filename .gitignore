@@ -1,0 +1,6 @@
+# 実行時データ（SIPパスワードやAPIトークンを含む設定、生成音声、ログ、予約）
+data/
+__pycache__/
+*.pyc
+.DS_Store
+.env

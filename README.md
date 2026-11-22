@@ -1,0 +1,96 @@
+# irodori-sip-call
+
+ローカルLLMが原稿を書き、TTSが読み上げ、SIPでスマホの Linphone に電話をかけてくれるモーニングコールです。
+iPhone では Linphone が CallKit に対応しているので、普通の電話と同じように着信します。応答すると音声が流れ、読み終わったら自動で切れます。
+
+Docker コンテナ1つで動き、設定用の WebUI、定時発信のスケジューラ、外部から予約発信できる REST API / MCP サーバーを含みます。
+
+```
+LLM（OpenAI互換）──原稿──▶ TTS（Irodori）──音声──▶ baresip ──SIP──▶ sip.linphone.org ──▶ Linphone（スマホ）
+```
+
+## 必要なもの
+
+- Docker が動く Linux マシン（`network_mode: host` を使うため Linux 推奨）
+- OpenAI 互換の Chat Completions API を持つ LLM サーバー（LM Studio、Ollama など）
+- TTS サーバー：[Irodori-TTS-Server](https://github.com/Aratako/Irodori-TTS-Server)（Irodori-Autospeak など、同じ `/v1/audio/speech` を持つものでも可）
+- [sip.linphone.org](https://subscribe.linphone.org/) のアカウントを2つ
+  - 発信用：このコンテナが使う
+  - 着信用：スマホの Linphone アプリでサインインしておく
+
+## 使い方
+
+```bash
+git clone https://github.com/Septe-l/irodori-sip-call.git
+cd irodori-sip-call
+docker compose up -d --build
+```
+
+ブラウザで `http://<ホスト>:45000` を開き、次を設定して保存します。
+
+| 項目 | 内容 |
+| --- | --- |
+| 発信先 | スマホ側の SIP アドレス（例 `sip:yourname@sip.linphone.org`） |
+| 発信用ユーザー名 / パスワード / SIPドメイン | 発信用アカウント（ドメインは `sip.linphone.org`） |
+| LLM URL / トークン / モデル | 例 `http://192.168.x.x:1234`。モデルはURLを入れるとプルダウンに出ます |
+| TTS URL / トークン / 声 | 例 `http://192.168.x.x:8088` |
+| スケジュール | 発信時刻・曜日・祝日（日本）を鳴らさないか・有効にするか |
+
+「今すぐ実行」で原稿生成から発信まで一通り試せます。
+
+設定・ログ・生成した音声・予約は `./data` に保存されます（`config.json` はパスワードを含むので権限 600 で保存）。
+
+### プロンプトの置き換え文字
+
+| 文字 | 中身 |
+| --- | --- |
+| `{month}` `{day}` `{weekday}` `{time_text}` | 発信する日時（`time_text` は「8時ちょうど」のような形） |
+| `{hour}` `{minute}` | 原稿を生成した時刻（発信の数分前） |
+
+## 予約発信 API / MCP
+
+OpenClaw などのエージェントから「指定の時刻に電話をかけて、これを読み上げて」と頼めます。
+
+### MCP
+
+Streamable HTTP で `http://<ホスト>:45000/mcp` に接続します。
+
+| ツール | 内容 |
+| --- | --- |
+| `schedule_call` | 予約する。`at`（ISO 8601 か `HH:MM`）または `in_minutes`、読み上げ文 `message` か LLM への指示 `prompt`、`target`、`voice`（すべて省略可。省略すると今すぐ設定のプロンプトで発信） |
+| `list_calls` | 予約の一覧 |
+| `cancel_call` | 予約の取り消し |
+
+### REST
+
+```bash
+# 7:30 に決まった文を読み上げる
+curl -X POST http://<ホスト>:45000/api/calls -H 'Content-Type: application/json' \
+  -d '{"at": "07:30", "message": "おはようございます。会議の時間です。"}'
+
+# 10分後に、LLMに書かせた原稿でかける
+curl -X POST http://<ホスト>:45000/api/calls -H 'Content-Type: application/json' \
+  -d '{"in_minutes": 10, "prompt": "洗濯物を取り込むよう短く伝えてください"}'
+
+curl http://<ホスト>:45000/api/calls              # 一覧
+curl -X DELETE http://<ホスト>:45000/api/calls/<id>  # 取り消し
+```
+
+API の詳細は `http://<ホスト>:45000/docs` にあります。
+
+- 原稿と音声は発信の数分前（「何分前から準備するか」）から作り始めます
+- 予定より10分以上遅れた予約（コンテナが止まっていた等）は発信せず `missed` になります
+- 定時発信と重なった場合は、先の発信が終わってからかけます
+
+## 注意
+
+- **認証はありません。** LAN 内で使う前提です。ポート 45000 をインターネットに公開しないでください。
+- baresip 1.1.0（Debian パッケージ）を使っています。動作確認で分かった注意点：
+  - `stun.linphone.org` は ICE で失敗するため、既定は `stun.l.google.com:19302` と `medianat=stun`
+  - Linphone は通話の暗号化が必須のため、既定は `srtp-mand`
+  - baresip はリサンプルしないため、コーデックは Opus のみにし、音声を 48kHz ステレオに変換してから流しています
+- SIP 5070/TCP・UDP と RTP 46000–46200/UDP をホストで使います。
+
+## ライセンス
+
+MIT License（[LICENSE](LICENSE)）

@@ -1,0 +1,9 @@
+services:
+  morning-call:
+    build: .
+    image: morning-call:latest
+    container_name: morning-call
+    network_mode: host        # SIPと通話音声(RTP)をNAT 1段で通すため
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>モーニングコール</title>
+<style>
+:root {
+  --bg: #f6f5f2; --card: #fff; --fg: #1d1d1f; --muted: #6e6e73; --line: #e3e1dc;
+  --accent: #d9822b; --accent-fg: #fff; --ok: #2f8f4e; --err: #c0392b; --input: #fbfaf8;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161615; --card: #20201f; --fg: #ededec; --muted: #9b9b98; --line: #34332f;
+    --accent: #f0a04b; --accent-fg: #1a1a1a; --ok: #5cc27e; --err: #ef6f61; --input: #1a1a19; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 20px 16px 60px; }
+h1 { font-size: 22px; margin: 4px 0 16px; display: flex; align-items: center; gap: 10px; }
+h2 { font-size: 15px; margin: 0 0 12px; color: var(--muted); font-weight: 600; letter-spacing: .02em; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+input, select, textarea { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--input); color: var(--fg); font: inherit; }
+textarea { min-height: 170px; font-size: 13px; line-height: 1.5; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+@media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+.days { display: flex; gap: 6px; flex-wrap: wrap; }
+.days label { margin: 0; display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px;
+  border: 1px solid var(--line); border-radius: 10px; cursor: pointer; color: var(--fg); font-size: 15px; user-select: none; }
+.days input { display: none; }
+.days label:has(input:checked) { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.check { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--fg); font-size: 14px; }
+.check input { width: auto; }
+button { padding: 9px 16px; border-radius: 9px; border: 1px solid var(--line); background: var(--input);
+  color: var(--fg); font: inherit; cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+button:disabled { opacity: .5; cursor: default; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.status { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 14px; }
+.status dt { color: var(--muted); }
+.status dd { margin: 0; }
+.pill { display: inline-block; padding: 1px 9px; border-radius: 99px; font-size: 12px; background: var(--line); }
+.pill.run { background: var(--accent); color: var(--accent-fg); }
+.msg { white-space: pre-wrap; background: var(--input); border: 1px solid var(--line); border-radius: 9px; padding: 10px; font-size: 14px; }
+audio { width: 100%; margin-top: 8px; }
+pre.log { background: var(--input); border: 1px solid var(--line); border-radius: 9px; padding: 10px;
+  font-size: 12px; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0; }
+.hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+#toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--fg); color: var(--bg);
+  padding: 9px 16px; border-radius: 99px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+#toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<main>
+  <h1>☀️ モーニングコール</h1>
+
+  <section>
+    <h2>状態</h2>
+    <dl class="status">
+      <dt>次回</dt><dd id="st-next">—</dd>
+      <dt>実行中</dt><dd id="st-running">—</dd>
+      <dt>前回</dt><dd id="st-last">—</dd>
+    </dl>
+    <div class="row" style="margin-top:14px">
+      <button data-run="generate">原稿だけ生成</button>
+      <button data-run="call">今の音声でテスト発信</button>
+      <button data-run="run" class="primary">今すぐ実行（生成→発信）</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>最新の原稿</h2>
+    <div id="msg" class="msg">まだありません</div>
+    <div class="hint" id="msg-time"></div>
+    <audio id="player" controls preload="none"></audio>
+  </section>
+
+  <form id="form">
+  <section>
+    <h2>スケジュール</h2>
+    <div class="grid">
+      <div><label>発信時刻</label><input type="time" name="call_at" required></div>
+      <div><label>何分前から準備するか</label><input type="number" name="prepare_minutes" min="1" max="30"></div>
+    </div>
+    <label>曜日</label>
+    <div class="days" id="days"></div>
+    <label class="check"><input type="checkbox" name="skip_holidays"> 祝日は鳴らさない</label>
+    <div class="hint" id="holidays"></div>
+    <label class="check"><input type="checkbox" name="enabled"> スケジュールを有効にする</label>
+  </section>
+
+  <section>
+    <h2>発信（SIP）</h2>
+    <label>発信先（iPhoneのLinphoneのSIPアドレス）</label>
+    <input name="target" placeholder="sip:xxxx@sip.linphone.org">
+    <div class="grid">
+      <div><label>発信用ユーザー名</label><input name="sip_user" autocomplete="off"></div>
+      <div><label>発信用パスワード</label><input name="sip_password" type="password" autocomplete="new-password"></div>
+      <div><label>SIPドメイン</label><input name="sip_domain" placeholder="sip.linphone.org"></div>
+      <div><label>トランスポート</label>
+        <select name="sip_transport"><option>tcp</option><option>udp</option><option>tls</option></select></div>
+      <div><label>STUNサーバー（空欄で無効）</label><input name="stun_server" placeholder="stun.l.google.com:19302"></div>
+      <div><label>NAT越え</label>
+        <select name="medianat"><option>stun</option><option>ice</option><option>none</option></select></div>
+      <div><label>通話の暗号化</label>
+        <select name="media_enc"><option>srtp-mand</option><option>srtp</option><option>none</option></select></div>
+      <div><label>呼び出しを待つ秒数</label><input type="number" name="ring_timeout" min="10" max="180"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>原稿（LLM・OpenAI互換）</h2>
+    <div class="grid">
+      <div><label>LLM URL</label><input name="llm_url" placeholder="http://localhost:1234"></div>
+      <div><label>モデル</label><select name="llm_model" id="model"></select></div>
+    </div>
+    <label>APIトークン</label><input name="llm_token" type="password" autocomplete="new-password">
+    <label>プロンプト</label>
+    <textarea name="prompt"></textarea>
+    <div class="hint">使える置き換え: {month} {day} {weekday} {time_text} … 発信日時 ／ {hour} {minute} … 原稿を生成した時刻（発信より数分早い）</div>
+    <div class="row" style="margin-top:8px"><button type="button" id="reset-prompt">プロンプトを初期値に戻す</button></div>
+    <label>LLMが使えないときの定型文</label><input name="fallback_text">
+  </section>
+
+  <section>
+    <h2>音声（TTS）</h2>
+    <div class="hint" style="margin-top:0">Irodori-TTS-Server / Irodori-Autospeak など、OpenAI互換の <code>/v1/audio/speech</code> を持つサーバー</div>
+    <div class="grid">
+      <div><label>TTS URL</label><input name="tts_url" placeholder="http://localhost:8088"></div>
+      <div><label>APIトークン（空欄で無し）</label><input name="tts_token" type="password" autocomplete="new-password"></div>
+      <div><label>声</label><select name="voice" id="voice"></select></div>
+      <div><label>ステップ数</label><input type="number" name="tts_steps" min="4" max="64"></div>
+    </div>
+  </section>
+
+  <div class="row"><button type="submit" class="primary">設定を保存</button></div>
+  </form>
+
+  <section style="margin-top:14px">
+    <h2>ログ</h2>
+    <pre class="log" id="log"></pre>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const form = $("#form");
+const DAYS = "月火水木金土日";
+const NUMBERS = ["prepare_minutes", "ring_timeout", "tts_steps"];
+
+function toast(t) {
+  const el = $("#toast"); el.textContent = t; el.classList.add("show");
+  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove("show"), 2500);
+}
+async function api(path, opt = {}) {
+  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opt });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || r.statusText);
+  return j;
+}
+
+$("#days").innerHTML = [...DAYS].map((d, i) =>
+  `<label><input type="checkbox" name="weekdays" value="${i}">${d}</label>`).join("");
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+// URL・トークンは保存前のフォームの値で問い合わせる
+async function fillSelect(sel, path, key, urlKey, tokenKey) {
+  const el = $(sel), current = el.value || el.dataset.current || "";
+  const body = { [urlKey]: form.elements[urlKey].value, [tokenKey]: form.elements[tokenKey].value };
+  const res = await api(path, { method: "POST", body: JSON.stringify(body) }).catch((e) => ({ [key]: [], error: e.message }));
+  const items = res[key] || [];
+  const list = !current || items.includes(current) ? items : [current, ...items];
+  const head = res.error ? "（取得できません）" : !form.elements[urlKey].value ? "（URL未設定）" : "（サーバー既定）";
+  el.innerHTML = `<option value="">${head}</option>` + list.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  el.value = current;
+}
+const loadVoices = () => fillSelect("#voice", "/api/voices", "voices", "tts_url", "tts_token");
+const loadModels = () => fillSelect("#model", "/api/models", "models", "llm_url", "llm_token");
+for (const [names, fn] of [[["tts_url", "tts_token"], loadVoices], [["llm_url", "llm_token"], loadModels]])
+  for (const n of names) form.elements[n].addEventListener("change", fn);
+
+async function loadConfig() {
+  const c = await api("/api/config");
+  for (const el of form.elements) {
+    if (!el.name || !(el.name in c)) continue;
+    if (el.name === "weekdays") el.checked = c.weekdays.includes(+el.value);
+    else if (el.type === "checkbox") el.checked = c[el.name];
+    else if (el.tagName === "SELECT" && (el.id === "voice" || el.id === "model")) el.dataset.current = c[el.name];
+    else el.value = c[el.name];
+  }
+  loadVoices(); loadModels();
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = {};
+  for (const el of form.elements) {
+    if (!el.name || el.name === "weekdays") continue;
+    body[el.name] = el.type === "checkbox" ? el.checked : NUMBERS.includes(el.name) ? +el.value : el.value;
+  }
+  body.weekdays = [...form.querySelectorAll("[name=weekdays]:checked")].map((x) => +x.value);
+  try { await api("/api/config", { method: "PUT", body: JSON.stringify(body) }); toast("保存しました"); refresh(); }
+  catch (err) { toast(err.message); }
+});
+
+$("#reset-prompt").onclick = async () => {
+  const { prompt } = await api("/api/config/reset-prompt", { method: "POST" });
+  form.elements.prompt.value = prompt; toast("初期値に戻しました");
+};
+
+document.querySelectorAll("[data-run]").forEach((b) => b.onclick = async () => {
+  try { await api(`/api/run/${b.dataset.run}`, { method: "POST" }); toast("開始しました"); refresh(); }
+  catch (err) { toast(err.message); }
+});
+
+const fmt = (iso) => iso ? new Date(iso).toLocaleString("ja-JP", { month: "numeric", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+let lastMsgTime = null;
+async function refresh() {
+  const s = await api("/api/status");
+  $("#st-next").textContent = s.next_run ? fmt(s.next_run) : "予定なし";
+  $("#st-running").innerHTML = s.running ? `<span class="pill run">${s.running}</span>` : "—";
+  $("#st-last").textContent = s.last_run ? `${fmt(s.last_run)}　${s.last_result}` : "—";
+  document.querySelectorAll("[data-run]").forEach((b) => b.disabled = !!s.running);
+  if (s.message_text) {
+    $("#msg").textContent = s.message_text;
+    $("#msg-time").textContent = `生成: ${fmt(s.message_mtime)}`;
+    if (s.message_mtime !== lastMsgTime) { $("#player").src = `/audio/message.wav?t=${Date.now()}`; lastMsgTime = s.message_mtime; }
+  }
+  const { lines } = await api("/api/log");
+  const el = $("#log"); const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 5;
+  el.textContent = lines.join("\n"); if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+(async () => {
+  await loadConfig();
+  const { holidays } = await api("/api/holidays");
+  $("#holidays").textContent = holidays.length
+    ? "直近の祝日: " + holidays.slice(0, 4).map((h) => `${h.date.slice(5).replace("-", "/")} ${h.name}`).join("、") : "";
+  refresh(); setInterval(refresh, 3000);
+})();
+</script>
+</body>
+</html>
