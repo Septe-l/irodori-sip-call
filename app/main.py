@@ -108,6 +108,59 @@ def save_calls() -> None:
     tmp.replace(CALLS_PATH)
 
 
+WD_JA = "月火水木金土日"
+WD_EN = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+REL_DAYS = {
+    "今日": 0, "きょう": 0, "本日": 0, "today": 0,
+    "明日": 1, "あした": 1, "あす": 1, "tomorrow": 1,
+    "明後日": 2, "あさって": 2, "dayaftertomorrow": 2,
+}
+WEEK_PREFIX = {  # 週は月曜始まり
+    "今週": 0, "thisweek": 0, "来週": 1, "nextweek": 1, "再来週": 2,
+}
+
+
+def parse_relative(at: str, now: dt.datetime) -> dt.datetime | None:
+    """「明日 7:30」「明後日7時半」「来週の月曜 8:00」「金曜日 7時」「tomorrow 07:30」「next monday 7:30」。
+    時刻を省略すると設定の発信時刻。解釈できなければ None"""
+    s = re.sub(r"[\s　]+", " ", at.strip().lower())
+    tm = re.search(r"(\d{1,2})(?:[:：](\d{2})|時(?:(\d{1,2})分|(半))?)$", s)
+    if tm:
+        h = int(tm.group(1))
+        mi = 30 if tm.group(4) else int(tm.group(2) or tm.group(3) or 0)
+        s = s[: tm.start()]
+    else:
+        h, mi = map(int, load_config()["call_at"].split(":"))
+    s = re.sub(r"\b(?:at|am|on)\b", "", s)
+    s = re.sub(r"[\s　の]|午前|朝", "", s)
+    if not s:
+        return None
+    if s in REL_DAYS:
+        day = now.date() + dt.timedelta(days=REL_DAYS[s])
+    else:
+        week = None
+        for p, w in WEEK_PREFIX.items():
+            if s.startswith(p):
+                week, s = w, s[len(p):]
+                break
+        if s.startswith("next"):
+            s = s[4:]
+        s = re.sub(r"曜日?$", "", s)
+        if len(s) == 1 and s in WD_JA:
+            wd = WD_JA.index(s)
+        elif s in WD_EN or (len(s) >= 3 and any(e.startswith(s) for e in WD_EN)):
+            wd = next(i for i, e in enumerate(WD_EN) if e.startswith(s))
+        else:
+            return None
+        today = now.date()
+        if week is None:  # 「金曜」だけなら、今日より後で次に来るその曜日
+            day = today + dt.timedelta(days=(wd - today.weekday() - 1) % 7 + 1)
+        else:
+            monday = today - dt.timedelta(days=today.weekday()) + dt.timedelta(weeks=week)
+            day = monday + dt.timedelta(days=wd)
+    return dt.datetime.combine(day, dt.time(h, mi))
+
+
 def parse_at(at: str | None, in_minutes: float | None) -> dt.datetime:
     now = dt.datetime.now()
     if in_minutes is not None:
@@ -123,6 +176,8 @@ def parse_at(at: str | None, in_minutes: float | None) -> dt.datetime:
         mon, day, h, mi = map(int, mo.groups())
         t = dt.datetime(now.year, mon, day, h, mi)
         return t if t > now - dt.timedelta(minutes=1) else t.replace(year=now.year + 1)
+    if (t := parse_relative(at, now)) is not None:
+        return t
     t = dt.datetime.fromisoformat(at.replace("Z", "+00:00"))
     if t.tzinfo:  # タイムゾーン付きはコンテナのローカル時刻に直す
         t = t.astimezone().replace(tzinfo=None)
@@ -145,6 +200,7 @@ def create_call(
         raise HTTPException(400, "message と prompt はどちらか一方だけ指定してください")
     call = {
         "id": uuid.uuid4().hex[:8], "at": when.isoformat(timespec="seconds"),
+        "at_text": f"{when:%Y-%m-%d}({WD_JA[when.weekday()]}) {when:%H:%M}",
         "message": message or None, "prompt": prompt or None, "target": target or None, "voice": voice or None,
         "status": "pending", "result": None, "created": dt.datetime.now().isoformat(timespec="seconds"),
     }
@@ -245,10 +301,16 @@ def schedule_call(
 
     Args:
         at: When to call, in the server's local time. Prefer formats WITHOUT a year:
-            "HH:MM" (next occurrence) or "MM-DD HH:MM" (this year; next year if already past).
+            "HH:MM" (next occurrence), "MM-DD HH:MM" (this year; next year if already past),
+            or relative days: "today 07:30", "tomorrow 07:30", "day after tomorrow 07:30",
+            "friday 07:30" (next Friday after today), "this week friday 07:30",
+            "next week monday 07:30" (weeks start on Monday). Japanese also works:
+            "明日 7:30", "明後日 7時半", "来週の月曜 8:00", "金曜日 7時". If the time is omitted
+            ("明日"), the configured daily call time is used.
             Full ISO 8601 ("YYYY-MM-DDTHH:MM", timezone offsets allowed) also works, but only
             include a year if you are sure of the current date. Omit both `at` and `in_minutes`
-            to call right away. The response includes the resolved time.
+            to call right away. The response includes the resolved time (`at_text`, with weekday);
+            check it against what the user asked for.
         in_minutes: Call this many minutes from now (alternative to `at`).
         message: Exact text to speak. If omitted, an LLM writes the message.
         prompt: Instruction for the LLM that writes the message (used only when `message` is omitted;
@@ -392,7 +454,7 @@ async def audio() -> FileResponse:
 
 
 class CallRequest(BaseModel):
-    at: str | None = Field(None, description='"HH:MM"（次に来るその時刻）、"MM-DD HH:MM"（今年。過ぎていれば来年）、ISO 8601。at も in_minutes も無ければ今すぐ')
+    at: str | None = Field(None, description='"HH:MM"（次に来るその時刻）、"MM-DD HH:MM"（今年。過ぎていれば来年）、"明日 7:30"・"明後日 7時半"・"来週の月曜 8:00"・"金曜 7時"・"tomorrow 07:30"・"next week monday 07:30"、ISO 8601。時刻省略で設定の発信時刻。at も in_minutes も無ければ今すぐ')
     in_minutes: float | None = Field(None, description="何分後にかけるか（at の代わり）")
     message: str | None = Field(None, description="そのまま読み上げる文。省略するとLLMが書く")
     prompt: str | None = Field(None, description="LLMへの指示（message省略時のみ。省略で設定のプロンプト）")
