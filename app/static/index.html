@@ -105,8 +105,10 @@ pre.log { background: var(--input); border: 1px solid var(--line); border-radius
       <div><label>STUNサーバー（空欄で無効）</label><input name="stun_server" placeholder="stun.l.google.com:19302"></div>
       <div><label>NAT越え</label>
         <select name="medianat"><option>stun</option><option>ice</option><option>none</option></select></div>
+      <div><label>コーデック</label>
+        <select name="codec"><option value="opus">Opus（Linphone向け・高音質）</option><option value="g711">G.711（050番号などのSIPサービス向け）</option></select></div>
       <div><label>通話の暗号化</label>
-        <select name="media_enc"><option>srtp-mand</option><option>srtp</option><option>none</option></select></div>
+        <select name="media_enc"><option value="srtp-mand">srtp-mand（必須・Linphone向け）</option><option value="srtp">srtp（できれば暗号化）</option><option value="none">none（暗号化しない）</option></select></div>
       <div><label>呼び出しを待つ秒数</label><input type="number" name="ring_timeout" min="10" max="180"></div>
     </div>
   </section>

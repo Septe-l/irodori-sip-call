@@ -44,6 +44,7 @@ DEFAULTS: dict = {
     "sip_transport": "tcp",
     "stun_server": "stun.l.google.com:19302",  # stun.linphone.orgはbaresip 1.1.0で失敗する
     "medianat": "stun",                # stun / ice / none
+    "codec": "opus",                   # opus（48kHz） / g711（PCMU/PCMA 8kHz、050番号などのSIPサービス向け）
     "media_enc": "srtp-mand",          # srtp-mand / srtp / none（Linphoneは暗号化必須）
     "target": "",                      # sip:xxx@sip.linphone.org
     "ring_timeout": 60,
@@ -136,26 +137,37 @@ async def synthesize(cfg: dict, text: str, path: Path) -> float:
     return wav_duration(path)
 
 
-def to_48k_stereo(src: Path, dst: Path) -> Path:
-    """baresip 1.1.0のaufileはリサンプルもチャンネル変換もしない。Opusは48kHzステレオで
-    ネゴされるため、それ以外の形式を流すと速さ・音程が狂う（モノラルなら1オクターブ低い声）。
-    TTSが何を返しても48kHz/16bit/ステレオに揃える"""
+# baresip 1.1.0のaufileはリサンプルもチャンネル変換もしない。ネゴしたコーデックと
+# 違う形式のwavを流すと速さ・音程が狂う（Opusにモノラルを流すと1オクターブ低い声）ので、
+# コーデックに合わせて変換してから流す
+CODECS = {"opus": ("opus.so", 48000, 2), "g711": ("g711.so", 8000, 1)}
+
+
+def convert_wav(src: Path, dst: Path, rate: int, channels: int) -> Path:
+    """16bit wav を rate Hz / channels ch に変換する"""
     with wave.open(str(src), "rb") as r:
-        ch, sw, rate = r.getnchannels(), r.getsampwidth(), r.getframerate()
+        ch, sw, sr = r.getnchannels(), r.getsampwidth(), r.getframerate()
         frames = r.readframes(r.getnframes())
-    if (ch, sw, rate) == (2, 2, 48000):
+    if (ch, sw, sr) == (channels, 2, rate):
         return src
     if sw != 2 or ch not in (1, 2):
         raise ValueError(f"非対応のwav: ch={ch} sampwidth={sw}")
     import array
     pcm = array.array("h", frames)
     mono = pcm if ch == 1 else array.array("h", ((a + b) // 2 for a, b in zip(pcm[0::2], pcm[1::2])))
-    if rate != 48000:  # 線形補間（音声用途なら十分）
+    if sr != rate:
         n = len(mono)
-        out_n = int(n * 48000 / rate)
-        step = rate / 48000
+        if rate < sr:  # 縮めるときは折り返しノイズを減らすため、まず移動平均で高域を落とす
+            k = max(1, round(sr / rate))
+            acc, run = array.array("h", bytes(n * 2)), 0
+            for i in range(n):
+                run += mono[i] - (mono[i - k] if i >= k else 0)
+                acc[i] = run // min(i + 1, k)
+            mono = acc
+        out_n = int(n * rate / sr)
+        step = sr / rate
         res = array.array("h", bytes(out_n * 2))
-        for i in range(out_n):
+        for i in range(out_n):  # 線形補間（音声用途なら十分）
             x = i * step
             j = int(x)
             f = x - j
@@ -163,14 +175,17 @@ def to_48k_stereo(src: Path, dst: Path) -> Path:
             b = mono[j + 1] if j + 1 < n else a
             res[i] = int(a + (b - a) * f)
         mono = res
-    st = array.array("h", bytes(len(mono) * 4))
-    st[0::2] = mono
-    st[1::2] = mono
+    if channels == 2:
+        out = array.array("h", bytes(len(mono) * 4))
+        out[0::2] = mono
+        out[1::2] = mono
+    else:
+        out = mono
     with wave.open(str(dst), "wb") as w:
-        w.setnchannels(2)
+        w.setnchannels(channels)
         w.setsampwidth(2)
-        w.setframerate(48000)
-        w.writeframes(st.tobytes())
+        w.setframerate(rate)
+        w.writeframes(out.tobytes())
     return dst
 
 
@@ -251,7 +266,7 @@ audio_source		aufile,{source}
 audio_alert		aufile,{OUT / 'alert.wav'}
 rtp_ports		46000-46200
 module_path		{BARESIP_MODULES}
-module			opus.so
+module			{CODECS[cfg.get("codec", "opus")][0]}
 module			aufile.so
 module			srtp.so
 module			stun.so
@@ -324,7 +339,8 @@ async def call(cfg: dict, wav: Path) -> str:
     duration = wav_duration(wav)
     confdir = Path(tempfile.mkdtemp(prefix="baresip-"))
     # 音源は応答した時点で読み込まれる（呼び出し中は流れない）ので最初から原稿を指定する
-    write_baresip_conf(cfg, confdir, to_48k_stereo(wav, OUT / 'message_stereo.wav'))
+    _, rate, channels = CODECS[cfg.get("codec", "opus")]
+    write_baresip_conf(cfg, confdir, convert_wav(wav, OUT / "message_call.wav", rate, channels))
     proc = await asyncio.create_subprocess_exec(
         "baresip", "-f", str(confdir),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
