@@ -33,6 +33,15 @@ DEFAULT_PROMPT = (
     "・記号、絵文字、括弧、見出し、ト書きは使わない。読み上げる本文だけを出力する"
 )
 
+DEFAULT_INSTRUCTION_PROMPT = (
+    "今日は{month}月{day}日（{weekday}曜日）、時刻は{time_text}です。\n"
+    "あなたは電話で相手に語りかける係です。次の依頼に沿って、電話で読み上げる内容を書いてください。\n"
+    "依頼: {instruction}\n"
+    "・日本語の話し言葉で、聞き取りやすく\n"
+    "・ニュースや天気など最新の情報が必要なら、ツールで取得してから書く\n"
+    "・記号、絵文字、括弧、見出し、ト書きは使わない。読み上げる本文だけを出力する"
+)
+
 DEFAULTS: dict = {
     "enabled": True,
     "call_at": "08:00",
@@ -53,6 +62,7 @@ DEFAULTS: dict = {
     "llm_model": "",                   # 空欄ならサーバー側の既定モデル
     "llm_token": "",
     "prompt": DEFAULT_PROMPT,
+    "instruction_prompt": DEFAULT_INSTRUCTION_PROMPT,  # 予約で instruction を渡されたときの雛形
     "mcp_servers": "",                 # 原稿生成時にLLMが使えるMCPサーバー（Streamable HTTP、1行に1つ）
     "fallback_text": "おはようございます。朝ですよ。そろそろ起きましょう。",
     "tts_url": "",                    # Irodori-TTS-Server / Irodori-Autospeak 例 http://localhost:8088
@@ -269,15 +279,22 @@ def wav_duration(path: Path) -> float:
 
 
 async def generate(
-    cfg: dict, *, call_at: dt.datetime | None = None, text: str | None = None, prompt: str | None = None,
+    cfg: dict, *, call_at: dt.datetime | None = None, text: str | None = None,
+    instruction: str | None = None,
 ) -> tuple[str, Path, float]:
-    """text があればそのまま読み上げ、無ければ prompt（省略時は設定のプロンプト）でLLMに書かせる"""
+    """text があればそのまま読み上げる。無ければLLMに書かせる：instruction（依頼）があれば
+    雛形 instruction_prompt に埋め込み、無ければ設定の定時用プロンプトを使う"""
     if not text:
         if call_at is None:
             h, m = map(int, cfg["call_at"].split(":"))
             call_at = dt.datetime.combine(dt.date.today(), dt.time(h, m))
         log.info("原稿を生成中…")
-        text = await generate_text(cfg, build_prompt(prompt or cfg["prompt"], call_at))
+        if instruction:
+            template = (cfg.get("instruction_prompt") or DEFAULT_INSTRUCTION_PROMPT).replace("{instruction}", instruction)
+            log.info("依頼: %s", instruction)
+        else:
+            template = cfg["prompt"]
+        text = await generate_text(cfg, build_prompt(template, call_at))
     log.info("原稿: %s", text)
     (OUT / "message.txt").write_text(text)
     path = OUT / "message.wav"

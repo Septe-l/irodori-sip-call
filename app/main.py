@@ -64,7 +64,8 @@ async def run_job(kind: str, call: dict | None = None) -> str:
                 if call:
                     cfg = {**cfg, **{k: call[k] for k in ("target", "voice") if call.get(k)}}
                 _, path, _ = await engine.generate(
-                    cfg, call_at=at, text=(call or {}).get("message"), prompt=(call or {}).get("prompt"))
+                    cfg, call_at=at, text=(call or {}).get("verbatim_text") or (call or {}).get("message"),
+                    instruction=(call or {}).get("instruction") or (call or {}).get("prompt"))
                 wait = (at - dt.datetime.now()).total_seconds()
                 if wait > 0:
                     log.info("%sまで%.0f秒待機", at.strftime("%H:%M"), wait)
@@ -201,7 +202,8 @@ def create_call(
     call = {
         "id": uuid.uuid4().hex[:8], "at": when.isoformat(timespec="seconds"),
         "at_text": f"{when:%Y-%m-%d}({WD_JA[when.weekday()]}) {when:%H:%M}",
-        "message": message or None, "prompt": prompt or None, "target": target or None, "voice": voice or None,
+        "instruction": prompt or None, "verbatim_text": message or None,
+        "target": target or None, "voice": voice or None,
         "status": "pending", "result": None, "created": dt.datetime.now().isoformat(timespec="seconds"),
     }
     CALLS.append(call)
@@ -293,38 +295,41 @@ mcp = FastMCP(
 
 @mcp.tool()
 def schedule_call(
-    at: str | None = None, in_minutes: float | None = None, message: str | None = None,
-    prompt: str | None = None, target: str | None = None, voice: str | None = None,
+    instruction: str | None = None, at: str | None = None, in_minutes: float | None = None,
+    verbatim_text: str | None = None, target: str | None = None, voice: str | None = None,
 ) -> dict:
-    """Place a phone call (SIP → the user's Linphone app) at a given time and speak a message with TTS.
-    The call hangs up automatically after the message has been played.
+    """Reserve a phone call to the user. At call time the user's phone rings; when they answer,
+    a voice reads a message, then the call hangs up.
+
+    The message is written by this call system's own LLM a few minutes BEFORE the call, and that
+    LLM can fetch news, weather, web pages etc. by itself at that moment. So:
+    - Put what the user wants the call to say/do in `instruction`, in the user's own words
+      (e.g. "最新ニュースを3つ伝えて", "会議があることを伝えて起こして").
+    - Do NOT fetch news/weather yourself and do NOT write the message yourself — it would be stale
+      by call time. Leave the writing to this system.
 
     Args:
-        at: When to call, in the server's local time. Prefer formats WITHOUT a year:
-            "HH:MM" (next occurrence), "MM-DD HH:MM" (this year; next year if already past),
-            or relative days: "today 07:30", "tomorrow 07:30", "day after tomorrow 07:30",
-            "friday 07:30" (next Friday after today), "this week friday 07:30",
-            "next week monday 07:30" (weeks start on Monday). Japanese also works:
-            "明日 7:30", "明後日 7時半", "来週の月曜 8:00", "金曜日 7時". If the time is omitted
-            ("明日"), the configured daily call time is used.
-            Full ISO 8601 ("YYYY-MM-DDTHH:MM", timezone offsets allowed) also works, but only
+        instruction: The user's request for what the call should say. Recommended for almost all
+            calls. If both `instruction` and `verbatim_text` are omitted, the configured default
+            morning-call message is used.
+        at: When to call (server local time). Prefer formats WITHOUT a year: "HH:MM" (next
+            occurrence), "MM-DD HH:MM" (this year; next year if already past), "tomorrow 07:30",
+            "day after tomorrow 07:30", "friday 07:30" (next Friday after today),
+            "this week friday 07:30", "next week monday 07:30" (weeks start on Monday).
+            Japanese works too: "明日 7:30", "明後日 7時半", "来週の月曜 8:00", "金曜日 7時".
+            Time omitted ("明日") = the configured daily call time. ISO 8601 also works, but only
             include a year if you are sure of the current date. Omit both `at` and `in_minutes`
-            to call right away. The response includes the resolved time (`at_text`, with weekday);
-            check it against what the user asked for.
+            to call right away.
         in_minutes: Call this many minutes from now (alternative to `at`).
-        message: Exact text to speak. If omitted, an LLM writes the message.
-        prompt: Instruction for the LLM that writes the message (used only when `message` is omitted;
-            the message is written a few minutes before the call, and that LLM can call its own MCP
-            tools such as news or weather). For anything that should be current at call time
-            ("tell me the latest news"), DO NOT fetch it yourself and put it in `message`;
-            pass the request as `prompt` instead so it is fetched right before the call.
-            defaults to the configured morning-call prompt). Placeholders {month} {day} {weekday}
-            {time_text} refer to the call time.
+        verbatim_text: ONLY when the user dictated the exact words to be read aloud. Read as-is,
+            no LLM, no tools. Never use it for news, weather or anything time-sensitive.
         target: SIP address to call (defaults to the configured target).
         voice: TTS voice id (defaults to the configured voice).
-    Returns the reservation, including its `id` for cancel_call.
+
+    Returns the reservation with its `id` (for cancel_call) and `at_text` (resolved date/time with
+    weekday) — check `at_text` against what the user asked for.
     """
-    return create_call(at, in_minutes, message, prompt, target, voice)
+    return create_call(at, in_minutes, verbatim_text, instruction, target, voice)
 
 
 @mcp.tool()
@@ -460,8 +465,10 @@ async def audio() -> FileResponse:
 class CallRequest(BaseModel):
     at: str | None = Field(None, description='"HH:MM"（次に来るその時刻）、"MM-DD HH:MM"（今年。過ぎていれば来年）、"明日 7:30"・"明後日 7時半"・"来週の月曜 8:00"・"金曜 7時"・"tomorrow 07:30"・"next week monday 07:30"、ISO 8601。時刻省略で設定の発信時刻。at も in_minutes も無ければ今すぐ')
     in_minutes: float | None = Field(None, description="何分後にかけるか（at の代わり）")
-    message: str | None = Field(None, description="そのまま読み上げる文。省略するとLLMが書く")
-    prompt: str | None = Field(None, description="LLMへの指示（message省略時のみ。省略で設定のプロンプト）")
+    instruction: str | None = Field(None, description="何を伝えてほしいか（例「最新ニュースを3つ伝えて」）。発信の数分前にLLMが原稿を書き、必要ならMCPツールでニュース等を取得する")
+    verbatim_text: str | None = Field(None, description="一字一句そのまま読み上げる文（LLMもツールも使わない）")
+    prompt: str | None = Field(None, description="instruction の旧名", deprecated=True)
+    message: str | None = Field(None, description="verbatim_text の旧名", deprecated=True)
     target: str | None = Field(None, description="発信先SIPアドレス（省略で設定値）")
     voice: str | None = Field(None, description="TTSの声（省略で設定値）")
 
@@ -469,7 +476,8 @@ class CallRequest(BaseModel):
 @app.post("/api/calls", status_code=201)
 async def api_create_call(req: CallRequest) -> dict:
     """指定時刻に電話をかけて読み上げる予約を作る"""
-    return create_call(**req.model_dump())
+    return create_call(
+        req.at, req.in_minutes, req.verbatim_text or req.message, req.instruction or req.prompt, req.target, req.voice)
 
 
 @app.get("/api/calls")

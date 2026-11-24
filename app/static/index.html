@@ -124,6 +124,9 @@ pre.log { background: var(--input); border: 1px solid var(--line); border-radius
     <textarea name="prompt"></textarea>
     <div class="hint">使える置き換え: {month} {day} {weekday} {time_text} … 発信日時 ／ {hour} {minute} … 原稿を生成した時刻（発信より数分早い）</div>
     <div class="row" style="margin-top:8px"><button type="button" id="reset-prompt">プロンプトを初期値に戻す</button></div>
+    <label>予約で「依頼」を受けたときのプロンプト</label>
+    <textarea name="instruction_prompt" style="min-height:130px"></textarea>
+    <div class="hint">{instruction} に予約の依頼文が入ります。ほかの置き換えは上と同じ</div>
     <label>原稿生成で使うMCPサーバー（1行に1つ、空欄で使わない）</label>
     <textarea name="mcp_servers" style="min-height:70px" placeholder="http://192.168.x.x:55000/mcp"></textarea>
     <div class="hint">原稿を作るとき（発信の数分前）にLLMがツールを呼べます。予約のプロンプトで「最新ニュースを伝えて」のように頼むと、その時点のニュースになります。</div>

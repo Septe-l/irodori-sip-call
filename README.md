@@ -51,11 +51,11 @@ docker compose up -d --build
 
 設定の「原稿生成で使うMCPサーバー」に MCP サーバー（Streamable HTTP）の URL を1行に1つ書くと、原稿を作るときに LLM がそのツールを呼べます。LLM サーバーがツール呼び出し（OpenAI 形式の `tools`）に対応している必要があります。
 
-原稿は発信の数分前に作られるので、ニュースを取得する MCP を登録しておけば、前の晩に「明日の7時にニュースを伝えて」と予約しても、**発信直前のニュース**になります（予約するときにニュースを取って `message` に入れると、予約した時点のニュースになってしまいます）。
+原稿は発信の数分前に作られるので、ニュースを取得する MCP を登録しておけば、前の晩に「明日の7時にニュースを伝えて」と予約しても、**発信直前のニュース**になります（予約する側がニュースを取って `verbatim_text` に入れると、予約した時点のニュースになってしまいます）。`instruction` は設定の「予約で依頼を受けたときのプロンプト」に埋め込まれて LLM に渡ります。
 
 ```bash
 curl -X POST http://<ホスト>:45000/api/calls -H 'Content-Type: application/json' \
-  -d '{"at": "明日 7:00", "prompt": "おはようの挨拶のあと、最新ニュースを3つ短く伝えてください"}'
+  -d '{"at": "明日 7:00", "instruction": "おはようの挨拶のあと、最新ニュースを3つ短く伝えて"}'
 ```
 
 ツールの呼び出しや取得に時間がかかる場合は「何分前から準備するか」を長めにしてください。
@@ -81,7 +81,7 @@ Streamable HTTP で `http://<ホスト>:45000/mcp` に接続します。
 
 | ツール | 内容 |
 | --- | --- |
-| `schedule_call` | 予約する。`at`（下の表）または `in_minutes`、読み上げ文 `message` か LLM への指示 `prompt`、`target`、`voice`（すべて省略可。省略すると今すぐ設定のプロンプトで発信） |
+| `schedule_call` | 予約する。`at`（下の表）または `in_minutes`、読み上げ文 依頼 `instruction`（推奨）か一字一句読む `verbatim_text`、`target`、`voice`（すべて省略可。省略すると今すぐ設定のプロンプトで発信） |
 | `list_calls` | 予約の一覧 |
 | `cancel_call` | 予約の取り消し |
 
@@ -103,11 +103,11 @@ Streamable HTTP で `http://<ホスト>:45000/mcp` に接続します。
 ```bash
 # 7:30 に決まった文を読み上げる
 curl -X POST http://<ホスト>:45000/api/calls -H 'Content-Type: application/json' \
-  -d '{"at": "07:30", "message": "おはようございます。会議の時間です。"}'
+  -d '{"at": "07:30", "verbatim_text": "おはようございます。会議の時間です。"}'
 
 # 10分後に、LLMに書かせた原稿でかける
 curl -X POST http://<ホスト>:45000/api/calls -H 'Content-Type: application/json' \
-  -d '{"in_minutes": 10, "prompt": "洗濯物を取り込むよう短く伝えてください"}'
+  -d '{"in_minutes": 10, "instruction": "洗濯物を取り込むよう短く伝えて"}'
 
 curl http://<ホスト>:45000/api/calls              # 一覧
 curl -X DELETE http://<ホスト>:45000/api/calls/<id>  # 取り消し
