@@ -295,7 +295,7 @@ mcp = FastMCP(
 
 @mcp.tool()
 def schedule_call(
-    instruction: str | None = None, at: str | None = None, in_minutes: float | None = None,
+    instruction: str, at: str | None = None, in_minutes: float | None = None,
     verbatim_text: str | None = None, target: str | None = None, voice: str | None = None,
 ) -> dict:
     """Reserve a phone call to the user. At call time the user's phone rings; when they answer,
@@ -309,9 +309,9 @@ def schedule_call(
       by call time. Leave the writing to this system.
 
     Args:
-        instruction: The user's request for what the call should say. Recommended for almost all
-            calls. If both `instruction` and `verbatim_text` are omitted, the configured default
-            morning-call message is used.
+        instruction: REQUIRED. The user's request for what the call should say, in their own words
+            (e.g. "最新ニュースを3つ伝えて"). For a plain wake-up call with nothing special, write
+            "いつものモーニングコール".
         at: When to call (server local time). Prefer formats WITHOUT a year: "HH:MM" (next
             occurrence), "MM-DD HH:MM" (this year; next year if already past), "tomorrow 07:30",
             "day after tomorrow 07:30", "friday 07:30" (next Friday after today),
@@ -329,6 +329,11 @@ def schedule_call(
     Returns the reservation with its `id` (for cancel_call) and `at_text` (resolved date/time with
     weekday) — check `at_text` against what the user asked for.
     """
+    if not (instruction or "").strip():
+        raise ValueError("instruction は必須です。ユーザーが電話で伝えてほしい内容を書いてください"
+                         "（特に無ければ「いつものモーニングコール」）")
+    if instruction.strip() in ("いつものモーニングコール", "default"):
+        instruction = None  # 設定の定時用プロンプトを使う
     return create_call(at, in_minutes, verbatim_text, instruction, target, voice)
 
 
