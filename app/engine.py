@@ -9,6 +9,7 @@ import re
 import shutil
 import tempfile
 import wave
+from contextlib import AsyncExitStack
 from pathlib import Path
 
 import httpx
@@ -52,6 +53,7 @@ DEFAULTS: dict = {
     "llm_model": "",                   # 空欄ならサーバー側の既定モデル
     "llm_token": "",
     "prompt": DEFAULT_PROMPT,
+    "mcp_servers": "",                 # 原稿生成時にLLMが使えるMCPサーバー（Streamable HTTP、1行に1つ）
     "fallback_text": "おはようございます。朝ですよ。そろそろ起きましょう。",
     "tts_url": "",                    # Irodori-TTS-Server / Irodori-Autospeak 例 http://localhost:8088
     "tts_token": "",                   # IRODORI_API_KEY を設定している場合
@@ -90,25 +92,97 @@ def build_prompt(template: str, call_at: dt.datetime) -> str:
     return re.sub(r"\{(\w+)\}", lambda mo: str(values.get(mo.group(1), mo.group(0))), template)
 
 
+MCP_MAX_ROUNDS = 8          # ツール呼び出しの往復の上限
+MCP_RESULT_CHARS = 8000     # ツール結果をLLMに渡す最大文字数
+
+
+def mcp_urls(cfg: dict) -> list[str]:
+    return [u.strip() for u in cfg.get("mcp_servers", "").splitlines() if u.strip() and not u.strip().startswith("#")]
+
+
+async def open_mcp(stack: AsyncExitStack, urls: list[str]) -> tuple[list[dict], dict]:
+    """MCPサーバーに接続し、OpenAI形式のツール定義と「ツール名→セッション」を返す。
+    つながらないサーバーは飛ばす"""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    tools, route = [], {}
+    for url in urls:
+        try:
+            read, write, _ = await stack.enter_async_context(streamablehttp_client(url, timeout=30))
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            for t in (await session.list_tools()).tools:
+                if t.name in route:
+                    log.warning("MCPツール名が重複しているため後のものを無視: %s (%s)", t.name, url)
+                    continue
+                route[t.name] = session
+                tools.append({"type": "function", "function": {
+                    "name": t.name, "description": t.description or "", "parameters": t.inputSchema,
+                }})
+            log.info("MCP接続: %s（%d個のツール）", url, len(tools))
+        except Exception as e:  # noqa: BLE001
+            log.warning("MCPに接続できません: %s (%s)", url, e)
+    return tools, route
+
+
+async def call_mcp_tool(route: dict, name: str, args_json: str) -> str:
+    if name not in route:
+        return f"エラー: {name} というツールはありません"
+    try:
+        args = json.loads(args_json or "{}")
+        res = await route[name].call_tool(name, args)
+        text = "\n".join(getattr(c, "text", "") or f"[{c.type}]" for c in res.content)
+        if res.isError:
+            text = "エラー: " + text
+    except Exception as e:  # noqa: BLE001
+        text = f"エラー: {e}"
+    log.info("MCP %s %s → %d文字", name, args_json, len(text))
+    return text[:MCP_RESULT_CHARS]
+
+
 async def generate_text(cfg: dict, prompt: str) -> str:
-    headers = {"Content-Type": "application/json"}
-    if cfg["llm_token"]:
-        headers["Authorization"] = f"Bearer {cfg['llm_token']}"
-    body = {
-        **({"model": cfg["llm_model"]} if cfg["llm_model"] else {}),
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.8,
-        "max_tokens": 600,
-        "reasoning_effort": "none",   # Gemma 4は思考を切らないと本文が空になる
-    }
     if not cfg["llm_url"]:
         log.warning("LLM URLが未設定のため定型文を使います")
         return cfg["fallback_text"]
+    headers = {"Content-Type": "application/json", **llm_headers(cfg)}
+    now = dt.datetime.now()
+    messages: list[dict] = [{"role": "user", "content": prompt}]
     try:
-        async with httpx.AsyncClient(timeout=180) as c:
-            r = await c.post(f"{cfg['llm_url']}/v1/chat/completions", json=body, headers=headers)
-            r.raise_for_status()
-            text = r.json()["choices"][0]["message"]["content"] or ""
+        async with AsyncExitStack() as stack, httpx.AsyncClient(timeout=300) as c:
+            tools, route = await open_mcp(stack, mcp_urls(cfg))
+            if tools:
+                messages.insert(0, {"role": "system", "content": (
+                    f"現在は{now:%Y年%m月%d日} {WEEK[now.weekday()]}曜日 {now:%H時%M分}です。"
+                    "あなたは下記のツールを実際に呼び出せます。ニュース・天気・Webページなど最新の情報が必要な"
+                    "依頼では、推測や断りを書かずに必ずツールを呼んで取得してください。"
+                    "取得が済んだら、電話で読み上げる本文だけを出力してください。"
+                )})
+            for _ in range(MCP_MAX_ROUNDS + 1):
+                body = {
+                    **({"model": cfg["llm_model"]} if cfg["llm_model"] else {}),
+                    "messages": messages,
+                    "temperature": 0.3 if tools and len(messages) <= 2 else 0.8,  # 最初はツールを選ぶので低め
+                    "max_tokens": 1500 if tools else 600,
+                    "reasoning_effort": "none",   # Gemma 4は思考を切らないと本文が空になる
+                }
+                if tools:
+                    body["tools"] = tools
+                r = await c.post(f"{cfg['llm_url']}/v1/chat/completions", json=body, headers=headers)
+                r.raise_for_status()
+                msg = r.json()["choices"][0]["message"]
+                calls = msg.get("tool_calls") or []
+                if not calls or not tools:
+                    text = msg.get("content") or ""
+                    break
+                messages.append({"role": "assistant", "content": msg.get("content"), "tool_calls": calls})
+                for tc in calls:
+                    fn = tc["function"]
+                    out = await call_mcp_tool(route, fn["name"], fn.get("arguments"))
+                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": out})
+            else:
+                log.warning("ツール呼び出しが%d回を超えたため打ち切り", MCP_MAX_ROUNDS)
+                text = ""
     except Exception as e:  # noqa: BLE001
         log.warning("LLM失敗、定型文を使います: %s", e)
         return cfg["fallback_text"]
