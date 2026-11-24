@@ -314,6 +314,10 @@ def schedule_call(
         in_minutes: Call this many minutes from now (alternative to `at`).
         message: Exact text to speak. If omitted, an LLM writes the message.
         prompt: Instruction for the LLM that writes the message (used only when `message` is omitted;
+            the message is written a few minutes before the call, and that LLM can call its own MCP
+            tools such as news or weather). For anything that should be current at call time
+            ("tell me the latest news"), DO NOT fetch it yourself and put it in `message`;
+            pass the request as `prompt` instead so it is fetched right before the call.
             defaults to the configured morning-call prompt). Placeholders {month} {day} {weekday}
             {time_text} refer to the call time.
         target: SIP address to call (defaults to the configured target).
