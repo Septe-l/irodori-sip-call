@@ -58,6 +58,8 @@ DEFAULTS: dict = {
     "media_enc": "srtp-mand",          # srtp-mand / srtp / none（Linphoneは暗号化必須）
     "target": "",                      # sip:xxx@sip.linphone.org
     "ring_timeout": 60,
+    "rtp_timeout": 5,         # 応答後この秒数以内に音声 (RTP) が流れなければ切る
+    "no_audio_retries": 1,    # 音声が流れなかったときのかけ直し回数
     "llm_url": "",                    # OpenAI互換（LM Studio / Ollama など）例 http://localhost:1234
     "llm_model": "",                   # 空欄ならサーバー側の既定モデル
     "llm_token": "",
@@ -421,8 +423,24 @@ class Ctrl:
         self.w.close()
 
 
+NO_AUDIO = "音声経路が確立しませんでした"
+
+
 async def call(cfg: dict, wav: Path) -> str:
-    """発信して、応答したらwavを流し、終わったら切る。戻り値は結果の説明"""
+    """発信して、応答したらwavを流し、終わったら切る。戻り値は結果の説明。
+    応答したのに音声 (RTP) が流れないことがたまにあるので、その場合は切ってかけ直す"""
+    retries = int(cfg.get("no_audio_retries", 1))
+    for attempt in range(retries + 1):
+        result = await _call_once(cfg, wav)
+        if result != NO_AUDIO:
+            return result if attempt == 0 else f"{result}（{attempt}回かけ直し）"
+        if attempt < retries:
+            log.warning("音声経路が確立しなかったので、%d秒後にかけ直します", 5)
+            await asyncio.sleep(5)
+    return f"{NO_AUDIO}（{retries}回かけ直しても失敗）"
+
+
+async def _call_once(cfg: dict, wav: Path) -> str:
     for k in ("sip_user", "sip_password", "sip_domain", "target"):
         if not cfg[k]:
             return f"{k} が未設定です"
@@ -460,6 +478,16 @@ async def call(cfg: dict, wav: Path) -> str:
             return "応答なし"
         if ev["type"] == "CALL_CLOSED":
             return f"接続できず: {ev.get('param', '')}"
+
+        # 応答しても SRTP/NAT の都合で音声が流れないことがある。数秒待っても RTP が来なければ切る
+        ev = await ctrl.wait({"CALL_RTPESTAB", "CALL_CLOSED"}, float(cfg.get("rtp_timeout", 5)))
+        if not ev:
+            log.warning("応答から%s秒たっても音声経路 (RTP) が確立しないので切断します", cfg.get("rtp_timeout", 5))
+            await ctrl.cmd("hangup")
+            await ctrl.wait({"CALL_CLOSED"}, 5)
+            return NO_AUDIO
+        if ev["type"] == "CALL_CLOSED":
+            return f"再生前に切断された: {ev.get('param', '')}"
 
         log.info("応答 → 再生開始（%.1f秒）", duration)
         ev = await ctrl.wait({"CALL_CLOSED"}, duration + 1.0)
